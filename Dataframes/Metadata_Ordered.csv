@@ -1,0 +1,15 @@
+﻿,Donor_ID,Cell_Type,GP_Status,Batch
+NK_D_L,Donor D,NK Cells,Low,A
+NK_D_H,Donor D,NK Cells,High,A
+NK_E_L,Donor E,NK Cells,Low,A
+NK_E_H,Donor E,NK Cells,High,A
+NK_F_L,Donor F,NK Cells,Low,A
+NK_F_H,Donor F,NK Cells,High,A
+NK_K_L,Donor K,NK Cells,Low,B
+NK_K_H,Donor K,NK Cells,High,B
+NK_L_L,Donor L,NK Cells,Low,B
+NK_L_H,Donor L,NK Cells,High,B
+NK_M_L,Donor M,NK Cells,Low,B
+NK_M_H,Donor M,NK Cells,High,B
+NK_N_L,Donor N,NK Cells,Low,B
+NK_N_H,Donor N,NK Cells,High,B

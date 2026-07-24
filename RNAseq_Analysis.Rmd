@@ -1,0 +1,414 @@
+---
+title: 'RNAseq Analysis Pipeline: Human NK Cells sorted as per Plasma Membrane Order'
+author: "Abishek Arora, PhD"
+date: "25/07/2026"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+
+# Differential expression analysis using the package DESeq2 in R
+
+```{r}
+# Clear R environment and load the required libraries for DE analysis of RNAseq data using DESeq2.
+rm(list = ls())
+library(DESeq2)
+library(RColorBrewer)
+library(pheatmap)
+library(tidyverse)
+```
+
+Import of datasets for use with DESeq2:
+
+```{r}
+# Import dataframe containing metadata for the analysis using DESeq2.
+Metadata_Ordered <- read.csv("Add filepath to Metadata_Ordered.csv here", row.names=1)
+# Import gene count data received from NGI Stockholm.
+Gene_Counts <- read.delim("Add filepath to Gene_Counts.txt here", row.names=1)
+# Get an overview of the imported dataframe's organisation.
+rownames(Metadata_Ordered)
+colnames(Gene_Counts)
+```
+
+To perform any analysis with DESeq2, we need to create a DESeq2 object by providing the raw counts, metadata, and design formula. To do this, we need to read in the raw counts data and associated metadata we created previously, make sure the sample names are in the same order in both datasets, then create a DESeq2 object to use for differential expression analysis.
+
+```{r}
+all(rownames(Metadata_Ordered) == colnames(Gene_Counts))
+# Organise data in the correct order for use with DESeq2.
+idx <- match(rownames(Metadata_Ordered), colnames(Gene_Counts))
+Reordered_Gene_Counts <- Gene_Counts [,idx]
+all(rownames(Metadata_Ordered) == colnames(Reordered_Gene_Counts))
+```
+
+Once the correct order has been established in the metadata and gene count dataframes, the DESeq2 object can be defined:
+
+```{r}
+# Define the DESeq2 object.
+dds <- DESeqDataSetFromMatrix(countData = Reordered_Gene_Counts, colData = Metadata_Ordered, design = ~ Batch + GP_Status)
+```
+
+**Unsupervised Clustering Analysis**
+
+We have created the DESeq2 object and now wish to perform quality control on our samples. Therefore, we need to generate the normalized counts (normalized for library size, which is the total number of gene counts per sample, while accounting for library composition). To obtain the normalized counts, use the DESeq2 object and generate the normalized counts matrix.
+
+```{r}
+# Determine the size factors to use for normalisation.
+dds <- estimateSizeFactors(dds)
+sizeFactors(dds)
+# Extract the normalized counts.
+Normalised_Gene_Counts <- counts(dds, normalized = TRUE)
+# View(Normalised_Gene_Counts)
+# When performing quality assessment of our count data, we need to transform the normalized counts for better visualization of the variance for unsupervised clustering analyses.
+# Transform the normalized counts 
+vsd <- vst(dds, blind = TRUE)
+# Extract the matrix of transformed counts
+vsd_mat <- assay(vsd)
+# Compute the correlation values between samples
+vsd_cor <- cor(vsd_mat)
+# Plot the heatmap
+pheatmap(vsd_cor, annotation = select(Metadata_Ordered, GP_Status))
+```
+
+To continue with the quality assessment of our samples, we will perform PCA to look how our samples cluster and whether our condition of interest corresponds with the principal components explaining the most variation in the data.
+
+```{r}
+# Plot the PCA of PC1 and PC2.
+pca <- plotPCA(vsd, intgroup= c("GP_Status")) #ntop = 1000
+nudge <- position_nudge(y = 1.8)
+pca + geom_label(aes(label = vsd$Donor_ID), position = nudge) + theme_bw() + xlim(-30,30) + ylim(-30,30)
+```
+
+**DESeq2 Analysis**
+
+```{r}
+# Run the DESeq2 analysis.
+dds <- DESeq(dds)
+```
+
+After fitting the model, the fit of the data to the negative binomial model should be explored by plotting the dispersion estimates using the plotDispEsts() function. Remember that the dispersion estimates are used to model the raw counts; if the dispersions don't follow the assumptions made by DESeq2, then the variation in the data could be poorly estimated and the DE results could be less accurate. The assumptions DESeq2 makes are that the dispersions should generally decrease with increasing mean and that they should more or less follow the fitted line.
+
+```{r}
+# Analysis of dispersion.
+mean_counts <- apply(Gene_Counts[, 1:6], 1, mean)
+variance_counts <- apply(Gene_Counts[, 1:6], 1, var)
+df <- data.frame(mean_counts, variance_counts)
+ggplot(df) + geom_point(aes(x= mean_counts, y= variance_counts)) + scale_y_log10() + scale_x_log10() + xlab("Means Counts per Gene") + ylab("Variance per Gene") + theme_minimal()
+```
+
+```{r}
+# Plot dispersions as computed by DESeq2.
+plotDispEsts(dds)
+```
+
+Extraction of results from the DESeq2 model:
+
+```{r}
+# Extract the results of the differential expression analysis.
+res <- results(dds, contrast = c("GP_Status", "High", "Low")) # Add "alpha = 0.1" if needed (This is the default value , if not included by the user).
+plotMA(res, ylim = c(-10, 10))
+summary(res)
+```
+
+```{r}
+# Save results as a data frame.
+res_all <- data.frame(res) %>% rownames_to_column(var = "ensgene")
+# Merging results with gene annotation data.
+gene_annotations <- read.delim("Add filepath to Gene_Annotations.txt here")
+# Adding descriptions with gene annotation data.
+res_all <- left_join(x = res_all, y = gene_annotations[, c("ensgene", "symbol")], by = "ensgene")
+write.csv(res_all, "NK_GP_Genes.csv")
+```
+
+Subsetting significant results from the DESeq2 analysis:
+
+```{r}
+# Subset the results to only return the significant genes with p-adjusted values less than 0.05.
+res_sig <- subset(res_all, padj < 0.05) # 10% false positives acceptable: all genes with an adjusted p value below 10% = 0.1 as significant.
+# Arranging results in decreasing order of significance.
+res_sig <- res_sig %>% arrange(padj)
+write.csv(res_sig, "NK_GP_Sig_Genes.csv")
+```
+
+## Visualisation of differential gene expression data
+
+**Expression Heatmap**
+
+All DEGs as an expression heatmap:
+
+```{r}
+#Subset normalised counts to significant genes.
+sig_norm_counts <- Normalised_Gene_Counts[res_sig$ensgene, ]
+rownames(sig_norm_counts) <- gsub("\\..*","",rownames(sig_norm_counts))
+write.csv(sig_norm_counts, "sig_norm_counts.csv")
+# Perform sanity check and add 'ensgene' to column name for column 1.
+```
+
+```{r}
+sig_norm_counts_plot <- read.csv("Add filepath to exported sig_norm_counts.csv here")
+sig_norm_counts_plot <- left_join(x = sig_norm_counts_plot, y = gene_annotations[, c("ensgene", "symbol")], by = "ensgene")
+sig_norm_counts_plot <- sig_norm_counts_plot %>% drop_na() # Novel genes without an HGNC symbol were removed prior to plotting the heatmap.
+write.csv(sig_norm_counts_plot, "sig_norm_counts_plot.csv")
+# Perform sanity check and remove 'ensgene' column and move symbol column to column 1 while removing the column name.
+```
+
+```{r}
+sig_norm <- read.csv("Add filepath to exported sig_norm_counts_plot.csv here", row.names=1)
+# Colour palette from RColorBrewer.
+heat_colours <- c("#053061", "#2166AC", "#4393C3", "#92C5DE", "#D1E5F0", "#F7F7F7", "#FDDBC7", "#F4A582", "#D6604D", "#B2182B", "#67001F")
+pheatmap(sig_norm, cluster_rows = TRUE, cluster_cols = TRUE, show_rownames = FALSE, show_colnames = TRUE, annotation = select (Metadata_Ordered, "GP_Status"), scale = "row", angle_col = 45, color = heat_colours)
+```
+
+Top 70 DEGs as an expression heatmap:
+
+```{r}
+sig_norm_counts <- Normalised_Gene_Counts[res_sig$ensgene, ]
+top_70 <- data.frame(sig_norm_counts) [1:72, ] %>% rownames_to_column(var = "ensgene")
+write.csv(top_70, "T70_sig_norm_counts.csv")
+# Perform sanity check and add 'ensgene' to column name for column 1.
+```
+
+```{r}
+sig_norm_counts_plot <- read.csv("Add filepath to exported T70_sig_norm_counts.csv here")
+sig_norm_counts_plot <- left_join(x = sig_norm_counts_plot, y = gene_annotations[, c("ensgene", "symbol")], by = "ensgene")
+sig_norm_counts_plot <- sig_norm_counts_plot %>% drop_na() # Novel genes without an HGNC symbol (NAs) were removed prior to plotting the heatmap.
+write.csv(sig_norm_counts_plot, "T70_sig_norm_counts_plot.csv")
+# Perform sanity check and remove 'ensgene' column and move symbol column to column 1 while removing the column name.
+```
+
+```{r}
+sig_norm <- read.csv("Add filepath to exported T70_sig_norm_counts_plot.csv here", row.names=1)
+# Colour palette from RColorBrewer
+heat_colours <- c("#053061", "#2166AC", "#4393C3", "#92C5DE", "#D1E5F0", "#F7F7F7", "#FDDBC7", "#F4A582", "#D6604D", "#B2182B", "#67001F")
+col_order <- c("NK_D_L", "NK_E_L", "NK_F_L", "NK_K_L", "NK_L_L", "NK_M_L", "NK_N_L", "NK_D_H", "NK_E_H", "NK_F_H", "NK_K_H", "NK_L_H", "NK_M_H", "NK_N_H")
+# Run pheatmap
+pheatmap(sig_norm[, col_order], cluster_rows = TRUE, cluster_cols = FALSE, show_rownames = TRUE, show_colnames = TRUE, annotation = select (Metadata_Ordered, "GP_Status"), scale = "row", angle_col = 45, color = heat_colours, border_color = "black")
+```
+
+**Volcano Plot**
+
+```{r eval = FALSE}
+all_res <- res_all %>% filter(symbol != "-")
+library(EnhancedVolcano)
+EnhancedVolcano(all_res,lab = all_res$symbol, x = 'log2FoldChange', y = 'pvalue', xlim = c(-10, 10), pointSize = 3, labSize = 5, FCcutoff = 1, pCutoff = 0.05, title = "High GP vs. Low GP (design = ~ Batch + GP_Status)", drawConnectors = TRUE, widthConnectors = 0.75)
+```
+
+**Expression Plot**
+
+```{r}
+sig_norm_counts <- Normalised_Gene_Counts[res_sig$ensgene, ]
+top_20 <- data.frame(sig_norm_counts) [1:20, ] %>% rownames_to_column(var = "ensgene")
+top_20 <- gather(top_20, key = "samplename", value = "normalized_counts", 2:6)
+top_20 <- inner_join(top_20, rownames_to_column(Metadata_Ordered, var = "samplename"), by = "samplename")
+top_20 <- left_join(x = top_20, y = gene_annotations[, c("ensgene", "symbol")], by = "ensgene")
+top_20 <- top_20 %>% drop_na() # Novel genes without an HGNC symbol (NAs) were removed prior to plotting the heatmap.
+ggplot(top_20) + geom_point(aes(x = symbol, y = normalized_counts, color = GP_Status)) + scale_y_log10() + xlab("Genes") + ylab("Normalised Counts") + ggtitle ("Top 20 Significant DE Genes") + theme_bw() + theme(axis.text.x = element_text(angle= 45, hjust= 1)) + theme(plot.title = element_text(hjust = 0.5))
+```
+
+**GSEA: File Prerequisites**
+
+```{r}
+rm(list = ls())
+res_GSEA <- read.csv("Add filepath to exported NK_GP_Genes.csv here", sep = ",", header = TRUE, stringsAsFactors = FALSE)
+head(res_GSEA)
+res_base <- res_GSEA[which(res_GSEA$baseMean >= 20),] # Delete genes with too low expression (artifacts).
+head(res_base)
+rnk <- data.frame(HGNC = res_base$symbol, LC = res_base$log2FoldChange) # Create dataframe with only HGNC names and fold expression.
+head(rnk)
+
+rnk <- rnk[order(rnk$LC, decreasing = TRUE),] # Rank list by fold expression.
+rnk$HGNC[rnk$HGNC==""] <- NA # If some rows have a empty HGNC value, make it "NA".
+rnk$HGNC[rnk$LC==""] <- NA # If some rows have a empty LC value, make it "NA".
+rnk <- rnk[complete.cases(rnk$HGNC),] # Remove rows with NAs in HGNC.
+rnk <- rnk[complete.cases(rnk$LC),] # Remove rows with NA in log2FoldChange. Can be omitted if using significant gene list.
+head(rnk)
+
+# Only downregulated genes:
+rnk_down <- rnk[rnk$LC < 0, ]
+# Only upregulated genes:
+rnk_up <- rnk[rnk$LC > 0, ]
+
+# Save .rnk file to input in GSEA tool:
+write.table(rnk, file = "NK_GP_DEG.rnk", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(rnk_down, file = "NK_GP_DEG_Down.rnk", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(rnk_up, file = "NK_GP_DEG_Up.rnk", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+Plots from GSEA:
+
+```{r}
+# Load the required libraries for plotting the GSEA results.
+library(ggridges)
+library(viridis)
+library(scales)
+library(cowplot)
+library(reshape2)
+library(ggplot2)
+library(stringr)
+
+# GOBP
+rm(list = ls())
+GO_neg <- read.csv(file = "Add filepath to generated NK_GP_GSEA_BP_Down.csv from GSEA tool")
+GO_pos <- read.csv(file = "Add filepath to generated NK_GP_GSEA_BP_Up.csv from GSEA tool")
+
+GO_neg$NAME <- str_replace_all(GO_neg$NAME, "[^[:alnum:]]", " ")
+GO_neg$NAME <- str_replace_all(GO_neg$NAME, "GOBP", "")
+GO_neg$NAME <- str_wrap(GO_neg$NAME, width = 32)
+GO_neg <- GO_neg[order(abs(GO_neg$NES), decreasing = FALSE),]
+GO_neg <- tail(GO_neg, n = 20)
+GO_neg$NAME <- factor(GO_neg$NAME, levels = GO_neg$NAME)
+
+GO_pos$NAME <- str_replace_all(GO_pos$NAME, "[^[:alnum:]]", " ")
+GO_pos$NAME <- str_replace_all(GO_pos$NAME, "GOBP", "")
+GO_pos$NAME <- str_wrap(GO_pos$NAME, width = 32)
+GO_pos <- GO_pos[order(abs(GO_pos$NES), decreasing = FALSE),]
+GO_pos <- tail(GO_pos, n = 20)
+GO_pos$NAME <- factor(GO_pos$NAME, levels = GO_pos$NAME)
+
+# GSEA Dot Plot
+GOBP_neg <- ggplot(GO_neg) +
+  geom_point(aes(x = NES, y = NAME, size=SIZE, color = FDR.q.val< 0.05 ))+
+  xlab("Normalized Enrichment Score")+
+  ylab("")+
+  ggtitle("GOBP - Downregulated")+
+  scale_colour_manual("FDR < 0.05", values=setNames(c('blue','grey'),c(T, F))) + theme_bw() + scale_radius(limits = c(0,500))
+
+ggsave("NK_GP_GSEA_BP_Down.pdf", GOBP_neg, height = 10, width = 6, units = "in")
+
+GOBP_pos <- ggplot(GO_pos) +
+  geom_point(aes(x = NES, y = NAME, size=SIZE, color = FDR.q.val< 0.05 ))+
+  xlab("Normalized Enrichment Score")+
+  ylab("")+
+  ggtitle("GOBP - Upregulated")+
+  scale_colour_manual("FDR < 0.05", values=setNames(c('red','grey'),c(T, F))) + theme_bw() + scale_radius(limits = c(0,500))
+
+ggsave("NK_GP_GSEA_BP_Up.pdf", GOBP_pos, height = 10, width = 6, units = "in")
+
+# GOCC
+rm(list = ls())
+GO_neg <- read.csv(file = "Add filepath to generated NK_GP_GSEA_CC_Down.csv from GSEA tool")
+GO_pos <- read.csv(file = "Add filepath to generated NK_GP_GSEA_CC_Up.csv from GSEA tool")
+
+GO_neg$NAME <- str_replace_all(GO_neg$NAME, "[^[:alnum:]]", " ")
+GO_neg$NAME <- str_replace_all(GO_neg$NAME, "GOCC", "")
+GO_neg$NAME <- str_wrap(GO_neg$NAME, width = 32)
+GO_neg <- GO_neg[order(abs(GO_neg$NES), decreasing = FALSE),]
+GO_neg <- tail(GO_neg, n = 20)
+GO_neg$NAME <- factor(GO_neg$NAME, levels = GO_neg$NAME)
+
+GO_pos$NAME <- str_replace_all(GO_pos$NAME, "[^[:alnum:]]", " ")
+GO_pos$NAME <- str_replace_all(GO_pos$NAME, "GOCC", "")
+GO_pos$NAME <- str_wrap(GO_pos$NAME, width = 32)
+GO_pos <- GO_pos[order(abs(GO_pos$NES), decreasing = FALSE),]
+GO_pos <- tail(GO_pos, n = 20)
+GO_pos$NAME <- factor(GO_pos$NAME, levels = GO_pos$NAME)
+
+# GSEA Dot Plot
+GOCC_neg <- ggplot(GO_neg) +
+  geom_point(aes(x = NES, y = NAME, size=SIZE, color = FDR.q.val< 0.05 ))+
+  xlab("Normalized Enrichment Score")+
+  ylab("")+
+  ggtitle("GOCC - Downregulated")+
+  scale_colour_manual("FDR < 0.05", values=setNames(c('blue','grey'),c(T, F))) + theme_bw() + scale_radius(limits = c(0,500))
+
+ggsave("NK_GP_GSEA_CC_Down.pdf", GOCC_neg, height = 10, width = 6, units = "in")
+
+GOCC_pos <- ggplot(GO_pos) +
+  geom_point(aes(x = NES, y = NAME, size=SIZE, color = FDR.q.val< 0.05 ))+
+  xlab("Normalized Enrichment Score")+
+  ylab("")+
+  ggtitle("GOCC - Upregulated")+
+  scale_colour_manual("FDR < 0.05", values=setNames(c('red','grey'),c(T, F))) + theme_bw() + scale_radius(limits = c(0,500))
+
+ggsave("NK_GP_GSEA_CC_Up.pdf", GOCC_pos, height = 10, width = 6, units = "in")
+
+# GOMF
+rm(list = ls())
+GO_neg <- read.csv(file = "Add filepath to generated NK_GP_GSEA_MF_Down.csv from GSEA tool")
+GO_pos <- read.csv(file = "Add filepath to generated NK_GP_GSEA_MF_Up.csv from GSEA tool")
+
+GO_neg$NAME <- str_replace_all(GO_neg$NAME, "[^[:alnum:]]", " ")
+GO_neg$NAME <- str_replace_all(GO_neg$NAME, "GOMF", "")
+GO_neg$NAME <- str_wrap(GO_neg$NAME, width = 32)
+GO_neg <- GO_neg[order(abs(GO_neg$NES), decreasing = FALSE),]
+GO_neg <- tail(GO_neg, n = 20)
+GO_neg$NAME <- factor(GO_neg$NAME, levels = GO_neg$NAME)
+
+GO_pos$NAME <- str_replace_all(GO_pos$NAME, "[^[:alnum:]]", " ")
+GO_pos$NAME <- str_replace_all(GO_pos$NAME, "GOMF", "")
+GO_pos$NAME <- str_wrap(GO_pos$NAME, width = 32)
+GO_pos <- GO_pos[order(abs(GO_pos$NES), decreasing = FALSE),]
+GO_pos <- tail(GO_pos, n = 20)
+GO_pos$NAME <- factor(GO_pos$NAME, levels = GO_pos$NAME)
+
+# GSEA Dot Plot
+GOMF_neg <-ggplot(GO_neg) +
+  geom_point(aes(x = NES, y = NAME, size=SIZE, color = FDR.q.val< 0.05 ))+
+  xlab("Normalized Enrichment Score")+
+  ylab("")+
+  ggtitle("GOMF - Downregulated")+
+  scale_colour_manual("FDR < 0.05", values=setNames(c('blue','grey'),c(T, F))) + theme_bw() + scale_radius(limits = c(0,500))
+
+ggsave("NK_GP_GSEA_MF_Down.pdf", GOMF_neg, height = 10, width = 6, units = "in")
+
+GOMF_pos <-ggplot(GO_pos) +
+  geom_point(aes(x = NES, y = NAME, size=SIZE, color = FDR.q.val< 0.05 ))+
+  xlab("Normalized Enrichment Score")+
+  ylab("")+
+  ggtitle("GOMF - Upregulated")+
+  scale_colour_manual("FDR < 0.05", values=setNames(c('red','grey'),c(T, F))) + theme_bw() + scale_radius(limits = c(0,500))
+
+ggsave("NK_GP_GSEA_MF_Up.pdf", GOMF_pos, height = 10, width = 6, units = "in")
+```
+
+## Exploration of PCA using pcaExplorer (Shiny App)
+
+```{r}
+library(pcaExplorer)
+annotation <- read.csv("Add filepath to Gene_Annotations_PCA.csv", row.names=1)
+# Define dds object as in the markdown above, as done when preparing to run DESeq2.
+pcaExplorer(dds = dds, annotation = annotation)
+```
+
+clusterProfiler: KEGG pathway Gene Set Enrichment Analysis
+
+```{r}
+# load the required libraries for KEGG pathway GSEA using clusterProfiler.
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(tidyverse)
+library(pathview)
+
+rm(list = ls())
+genes <- read.csv("Add filepath to exported NK_GP_Genes.csv here", sep = ",", header = TRUE, stringsAsFactors = FALSE)
+genes <- genes %>% drop_na()
+genes_vec <- genes[[8]]
+deg <- mapIds(org.Hs.eg.db, genes_vec, 'ENTREZID', 'SYMBOL')
+
+geneList_main <- setNames(genes$log2FoldChange, deg)
+geneList_main <- sort(geneList_main, decreasing = TRUE)
+
+geneList_df <- data.frame(name = names(geneList_main), value = geneList_main)
+geneList_df <- geneList_df[!is.na(geneList_df$name), ]
+geneList_df <- geneList_df %>% distinct(name, .keep_all = TRUE)
+geneList <- setNames(geneList_df$value, geneList_df$name)
+
+# KEGG
+genes_KEGG <- gseKEGG(geneList = geneList, organism = "hsa", minGSSize = 15, maxGSSize = 500, pvalueCutoff = 0.05, pAdjustMethod ="BH", verbose = TRUE)
+dfKEGG <- genes_KEGG@result
+write.csv(dfKEGG, "NK_GP_KEGG_GSEA.csv")
+
+# Selected KEGG pathways for visualization using pathview:
+# Cell cycle
+pathview(gene.data = geneList, pathway.id = "hsa04110", species = "hsa", kegg.native = FALSE)
+pathview(gene.data = geneList, pathway.id = "hsa04110", species = "hsa")
+
+# Cellular senescence
+pathview(gene.data = geneList, pathway.id = "hsa04218", species = "hsa", kegg.native = FALSE)
+pathview(gene.data = geneList, pathway.id = "hsa04218", species = "hsa")
+
+# TGF-beta signalling pathway
+pathview(gene.data = geneList, pathway.id = "hsa04350", species = "hsa", kegg.native = FALSE)
+pathview(gene.data = geneList, pathway.id = "hsa04350", species = "hsa")
+```
