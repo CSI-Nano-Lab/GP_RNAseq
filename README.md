@@ -16,8 +16,6 @@ Luca A. Andronico<sup>1,2,3*</sup>, Cenk O. Gurdap<sup>1,2</sup>, Abishek Arora<
 <sup>13</sup>Department of Immunology and Inflammation, Imperial College London, W12 0NN, London, UK.</br>
 <sup>*</sup>Corresponding authors: [erdinc.sezgin@ki.se](mailto:erdinc.sezgin@ki.se@ki.se), [luca.andronico@ki.se](mailto:luca.andronico@ki.se)
 
-**Published in *Nature Chemical Biology* (2026), DOI:** [10.1016/abc](https://doi.org/10.1016/abc) | **PubMed:** [00000000](https://pubmed.ncbi.nlm.nih.gov/00000000/) | **GEO:** [GSE341300](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE341300)
-
 ## Analysis Pipeline
 
 Thank you for showing interest in our manuscript. In this GitHub repository you will find the source code and data sets required to replicate our figures and findings using R.
